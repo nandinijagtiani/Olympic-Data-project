@@ -1,0 +1,170 @@
+```{r, include=FALSE}
+library(tidyverse)
+library(car)
+library(corrplot)
+library(dplyr)
+library(ggplot2)
+```
+
+```{r}
+medals = read.csv("athlete_events.csv")
+countries = read.csv("noc_regions.csv")
+```
+
+
+### Question 1 - Simple Linear model
+```{r}
+df<-read.csv("athlete_events.csv")
+
+df$Medal <- ifelse(df$Medal %in% c("Gold", "Silver", "Bronze"), 1, 0)
+
+model <- glm(Medal ~ Age, data = df, family = "binomial")
+
+summary(model)
+
+ggplot(df, aes(x = Age, y = Medal)) +
+  geom_point() +
+  geom_smooth(method = "glm", method.args = list(family = "binomial")) +
+  labs(x = "Age", y = "Probability of Winning Medal", title = "Age vs Probability of Winning Medal")
+
+pchisq(model$deviance, df=model$df.residual, lower.tail=FALSE) #goodness of fit chi-sq test for deviance
+
+df <- df[!is.na(df$Age), ]
+correlation <- cor(df$Age, df$Medal)
+print(correlation)
+
+```
+
+
+### Question 2 - Multiple Linear model
+
+Multiple linear regression 
+```{r}
+country_summary <- medals %>%
+	group_by(NOC, Year) %>%
+	summarise(Total_Athletes = n_distinct(ID),
+						Average_Age = mean(Age, na.rm = TRUE),
+						Average_BMI = mean(Weight / (Height/100)^2, na.rm = TRUE), # Assuming weight in kg and height in cm
+						Total_Medals = sum(!is.na(Medal)),
+						.groups = 'drop')
+```
+
+```{r}
+model <- lm(Total_Medals ~ Total_Athletes + Average_Age + Average_BMI, 
+						data = country_summary, na.action = na.exclude)
+
+t <- rstudent(model) 
+
+outliers <- abs(t) > 2
+country_summary_clean <- country_summary[!outliers, ]
+
+model_clean <- lm(Total_Medals ~ Total_Athletes + Average_Age + Average_BMI, 
+									data = country_summary_clean)
+summary(model_clean)
+```
+
+Check for multicollinearity
+
+```{r}
+vif(model_clean) # Variance Inflation Factor
+cor_matrix <- cor(country_summary[, c("Total_Athletes", "Average_Age", "Average_BMI", "Total_Medals")], use = "complete.obs")
+
+corrplot(cor_matrix, method = "circle", type = "upper", order = "hclust",
+					 tl.col = "black", tl.srt = 45, 
+					 addCoef.col = "black", # Add correlation coefficients
+					 col = colorRampPalette(c("#BB0000", "white", "#0000BB"))(200))
+
+corrplot(cor_matrix)
+vif(model_clean)
+```
+
+```{r}
+plot(fitted(model_clean), resid(model_clean), main = "Residuals vs Fitted")
+abline(h = 0, col = "red")
+
+t <- rstudent(model_clean)
+
+plot(fitted(model_clean), t)
+abline(h = 0, col = "red")
+title("Studentized Residual vs Fitted", ylab = "Studentized")
+
+qqnorm(resid(model_clean), main = "Residual Q-Q Plot")
+qqline(resid(model_clean), col = "red")
+
+qqnorm(t, ylab="Studentized Residuals", xlab="Normal Scores",main="Studentized Residual Q-Q Plot") 
+qqline(t, col = "red")
+
+anova(model_clean)
+k = cooks.distance(model_clean)
+
+plot(k, type="h", main="Cook's Distance")
+plot(fitted(model_clean),k)
+title("Cooks Distance vs Fitted Values")
+```
+
+
+This is for the weighted least squares method 
+```{r}
+combined_data <- merge(medals, countries, by="NOC")
+olympic_data <- combined_data %>%
+	group_by(NOC) %>%
+	summarize(Total_Medals = sum(Medal != "NA", na.rm = TRUE),
+						Total_Athletes = n_distinct(ID),
+						Average_Age = mean(Age, na.rm = TRUE),
+						Average_BMI = mean(Weight/((Height/100)^2), na.rm = TRUE))
+
+olympic_data <- olympic_data %>%
+	filter(!is.nan(Average_BMI))
+
+model.1 <- lm(Total_Medals ~ Total_Athletes + Average_Age + Average_BMI, 
+							data = olympic_data)
+summary(model.1)
+
+plot(fitted(model.1), rstudent(model.1))
+wts <- 1/fitted(lm(abs(residuals(model.1)) ~ fitted(model.1)))^2
+
+model.2 <- lm(Total_Medals ~ Total_Athletes + Average_Age + Average_BMI, 
+							data = olympic_data,weights = wts)
+summary(model.2)
+plot(fitted(model.2), rstudent(model.2))
+```
+
+
+### Question 3 - Home Team Advantage
+
+```{r}
+data = merge(medals, countries, by="NOC") %>% 
+	select(ID, Name, Games,NOC, Country, region, Medal) %>% 
+	mutate(Home = if_else(Country == region, 1, 0),
+				 Place = if_else(Medal %in% c("Gold", "Silver", "Bronze"), 1, 0)) %>% 
+	arrange(ID)
+```
+
+```{r}
+places = data %>% 
+	mutate(Place = if_else(Medal %in% c("Gold", "Silver", "Bronze"), 1, 0)) %>% 
+	filter(!is.na(Home))
+
+nums = places %>% 
+	group_by(Home) %>% 
+	count(Place)
+nums
+
+```
+
+```{r}
+prop.test(x = c(1059, 38715), n = c(6706, 264040), alternative = "greater")
+```
+
+```{r}
+model = glm(Place~Home,data=places, family="binomial")
+summary(model)
+confint(model)
+d = cooks.distance(model)
+sum(d>1)
+```
+
+
+
+
+
